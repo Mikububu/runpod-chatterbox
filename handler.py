@@ -108,9 +108,13 @@ def handler(job):
         # Generate audio
         wav = model.generate(text, **generate_kwargs)
         
-        # Save as WAV (24kHz, model.sr)
+        # Convert to 16-bit PCM (required for backend stitching)
+        # Chatterbox outputs float32, we need int16
+        wav_16bit = (wav * 32767).to(torch.int16)
+        
+        # Save as WAV (24kHz, 16-bit PCM mono)
         buffer = io.BytesIO()
-        torchaudio.save(buffer, wav, model.sr, format="wav")
+        torchaudio.save(buffer, wav_16bit, model.sr, format="wav", encoding="PCM_S", bits_per_sample=16)
         buffer.seek(0)
         
         audio_bytes = buffer.read()
