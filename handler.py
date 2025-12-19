@@ -1,18 +1,12 @@
 """
 RunPod Serverless Handler for Chatterbox TTS
-Generates audio from text using the Chatterbox model with voice cloning
+Voice cloning using audio_prompt_path (file-based approach)
 
-IMPORTANT PARAMETERS (from HuggingFace docs):
-- exaggeration (default 0.5): Emotion intensity (0-1)
-- cfg (default 0.5): Classifier-free guidance weight
-  - Lower cfg (~0.3) = slower, more deliberate pacing
-  - Higher cfg = faster speech
-  - For voice cloning with fast speakers, use cfg=0.3
-  
-Tips from docs:
-- General use: exaggeration=0.5, cfg=0.5
-- Expressive/dramatic: exaggeration=0.7, cfg=0.3
-- Voice cloning: cfg=0.3 helps match reference better
+Parameters:
+- text: Text to synthesize
+- audio_url: URL to voice sample for cloning
+- exaggeration: Emotion intensity (0-1), default 0.5
+- cfg: Classifier-free guidance (0-1), default 0.5
 """
 
 import runpod
@@ -21,101 +15,68 @@ import torchaudio
 import base64
 import io
 import os
+import tempfile
 import requests
 from chatterbox.tts import ChatterboxTTS
 
-# Initialize model on startup (cold start ~30s)
+# Initialize model on startup
 print("🔊 Loading Chatterbox TTS model...")
 model = ChatterboxTTS.from_pretrained(device="cuda")
 print("✅ Model loaded!")
 
-# Cache for voice samples to avoid re-downloading
-voice_cache = {}
+# Cache downloaded voice samples
+voice_file_cache = {}
 
 
-def download_voice_sample(url: str) -> torch.Tensor:
-    """Download and cache voice sample from URL"""
-    if url in voice_cache:
-        print(f"📦 Using cached voice sample")
-        return voice_cache[url]
+def download_voice_to_file(url: str) -> str:
+    """Download voice sample to temp file, return path"""
+    if url in voice_file_cache and os.path.exists(voice_file_cache[url]):
+        print(f"📦 Using cached voice file")
+        return voice_file_cache[url]
     
-    print(f"⬇️ Downloading voice sample from {url[:50]}...")
+    print(f"⬇️ Downloading voice from {url[:60]}...")
     response = requests.get(url, timeout=30)
     response.raise_for_status()
     
-    # Load audio from bytes
-    audio_bytes = io.BytesIO(response.content)
-    waveform, sample_rate = torchaudio.load(audio_bytes)
+    # Save to temp file with correct extension
+    ext = ".mp3" if ".mp3" in url else ".wav" if ".wav" in url else ".m4a"
+    temp_file = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
+    temp_file.write(response.content)
+    temp_file.close()
     
-    # Resample to 24000Hz if needed (Chatterbox expects 24kHz)
-    if sample_rate != 24000:
-        resampler = torchaudio.transforms.Resample(sample_rate, 24000)
-        waveform = resampler(waveform)
-    
-    # Convert to mono if stereo
-    if waveform.shape[0] > 1:
-        waveform = waveform.mean(dim=0, keepdim=True)
-    
-    # Cache it
-    voice_cache[url] = waveform
-    print(f"✅ Voice sample loaded and cached ({waveform.shape[1]/24000:.1f}s)")
-    
-    return waveform
+    voice_file_cache[url] = temp_file.name
+    print(f"✅ Saved to {temp_file.name}")
+    return temp_file.name
 
 
 def handler(job):
     """
-    RunPod handler function
-    
-    Input:
-    {
-        "input": {
-            "text": "Hello, this is a test.",
-            "audio_url": "https://example.com/voice_sample.mp3",  # optional - for voice cloning
-            "exaggeration": 0.5,  # emotion intensity (0-1), default 0.5
-            "cfg": 0.5  # classifier-free guidance (0-1), default 0.5, lower=slower/clearer
-        }
-    }
-    
-    Output:
-    {
-        "audio_base64": "...",
-        "duration_seconds": 3.5
-    }
+    RunPod handler - uses audio_prompt_path for voice cloning
     """
     try:
         job_input = job.get("input", {})
         text = job_input.get("text", "")
-        audio_url = job_input.get("audio_url", None)
-        
-        # Get parameters with proper defaults from HuggingFace docs
-        exaggeration = float(job_input.get("exaggeration", 0.5))  # Default 0.5
-        cfg = float(job_input.get("cfg", 0.5))  # Default 0.5 (CRITICAL for quality!)
+        audio_url = job_input.get("audio_url")
+        exaggeration = float(job_input.get("exaggeration", 0.5))
+        cfg = float(job_input.get("cfg", 0.5))
         
         if not text:
             return {"error": "No text provided"}
         
-        print(f"🎤 Generating audio for: {text[:100]}...")
-        print(f"   exaggeration: {exaggeration}")
-        print(f"   cfg: {cfg}")
-        print(f"   Voice cloning: {'Yes' if audio_url else 'No (default voice)'}")
+        print(f"🎤 Text: {text[:80]}...")
+        print(f"   exaggeration={exaggeration}, cfg={cfg}")
+        print(f"   Voice URL: {audio_url[:60] if audio_url else 'None'}...")
         
-        # Load voice sample if URL provided
-        audio_prompt = None
+        # Generate with or without voice cloning
         if audio_url:
-            try:
-                audio_prompt = download_voice_sample(audio_url)
-            except Exception as e:
-                print(f"⚠️ Failed to load voice sample: {e}, using default voice")
-                audio_prompt = None
-        
-        # Generate audio with proper parameters
-        if audio_prompt is not None:
+            # Download voice and use audio_prompt_path
+            voice_path = download_voice_to_file(audio_url)
+            print(f"🎯 Using audio_prompt_path: {voice_path}")
             wav = model.generate(
                 text,
-                audio_prompt=audio_prompt,
+                audio_prompt_path=voice_path,
                 exaggeration=exaggeration,
-                cfg=cfg  # CRITICAL: This was missing!
+                cfg=cfg
             )
         else:
             wav = model.generate(
@@ -124,18 +85,15 @@ def handler(job):
                 cfg=cfg
             )
         
-        # Convert to bytes
+        # Convert to WAV bytes
         buffer = io.BytesIO()
         torchaudio.save(buffer, wav, 24000, format="wav")
         buffer.seek(0)
         
-        # Encode as base64
         audio_base64 = base64.b64encode(buffer.read()).decode("utf-8")
-        
-        # Calculate duration
         duration = wav.shape[1] / 24000
         
-        print(f"✅ Generated {duration:.2f}s of audio")
+        print(f"✅ Generated {duration:.2f}s audio")
         
         return {
             "audio_base64": audio_base64,
@@ -149,5 +107,4 @@ def handler(job):
         return {"error": str(e)}
 
 
-# Start the serverless handler
 runpod.serverless.start({"handler": handler})
