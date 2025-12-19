@@ -1,12 +1,14 @@
 """
 RunPod Serverless Handler for Chatterbox TTS
-Voice cloning using audio_prompt_path (file-based approach)
+Version: 2.0.0 - CLEAN (no cfg parameter)
 
 Parameters:
-- text: Text to synthesize
+- text: Text to synthesize  
 - audio_url: URL to voice sample for cloning
 - exaggeration: Emotion intensity (0-1), default 0.5
 """
+
+HANDLER_VERSION = "2.0.0"
 
 import runpod
 import torch
@@ -19,9 +21,9 @@ import requests
 from chatterbox.tts import ChatterboxTTS
 
 # Initialize model on startup
-print("🔊 Loading Chatterbox TTS model...")
+print(f"🔊 Loading Chatterbox TTS model... (Handler v{HANDLER_VERSION})")
 model = ChatterboxTTS.from_pretrained(device="cuda")
-print("✅ Model loaded!")
+print(f"✅ Model loaded! Handler version {HANDLER_VERSION}")
 
 # Cache downloaded voice samples
 voice_file_cache = {}
