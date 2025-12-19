@@ -1,15 +1,14 @@
 """
 RunPod Serverless Handler for Chatterbox TTS
-Version: 2.1.0 - MP3 output for smaller file sizes
+Version: 2.1.1 - WAV output for backend stitching (backend converts to MP3)
 
 Parameters:
 - text: Text to synthesize  
 - audio_url: URL to voice sample for cloning (WAV format recommended)
 - exaggeration: Emotion intensity (0-1), default 0.5
-- output_format: "mp3" (default) or "wav"
 """
 
-HANDLER_VERSION = "2.1.0"
+HANDLER_VERSION = "2.1.1"
 
 import runpod
 import torch
@@ -18,7 +17,6 @@ import base64
 import io
 import os
 import tempfile
-import subprocess
 import requests
 from chatterbox.tts import ChatterboxTTS
 
@@ -41,8 +39,15 @@ def download_voice_to_file(url: str) -> str:
     response = requests.get(url, timeout=30)
     response.raise_for_status()
     
-    # Save to temp file with correct extension
-    ext = ".mp3" if ".mp3" in url else ".wav" if ".wav" in url else ".m4a"
+    # Save to temp file - always use .wav for compatibility
+    # Chatterbox works best with WAV input
+    if ".wav" in url:
+        ext = ".wav"
+    elif ".mp3" in url:
+        ext = ".mp3"
+    else:
+        ext = ".wav"
+    
     temp_file = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
     temp_file.write(response.content)
     temp_file.close()
@@ -52,50 +57,22 @@ def download_voice_to_file(url: str) -> str:
     return temp_file.name
 
 
-def wav_to_mp3(wav_tensor, sample_rate=24000):
-    """Convert WAV tensor to MP3 bytes using ffmpeg"""
-    # Save WAV to temp file
-    wav_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-    torchaudio.save(wav_file.name, wav_tensor, sample_rate, format="wav")
-    wav_file.close()
-    
-    # Convert to MP3 using ffmpeg
-    mp3_file = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
-    mp3_file.close()
-    
-    try:
-        subprocess.run([
-            "ffmpeg", "-y", "-i", wav_file.name,
-            "-codec:a", "libmp3lame", "-b:a", "128k",
-            mp3_file.name
-        ], check=True, capture_output=True)
-        
-        with open(mp3_file.name, "rb") as f:
-            mp3_bytes = f.read()
-        
-        return mp3_bytes
-    finally:
-        # Cleanup temp files
-        os.unlink(wav_file.name)
-        os.unlink(mp3_file.name)
-
-
 def handler(job):
     """
-    RunPod handler - outputs MP3 for smaller file sizes
+    RunPod handler - outputs WAV for backend stitching
+    Backend will convert final stitched audio to MP3
     """
     try:
         job_input = job.get("input", {})
         text = job_input.get("text", "")
         audio_url = job_input.get("audio_url")
         exaggeration = float(job_input.get("exaggeration", 0.5))
-        output_format = job_input.get("output_format", "mp3")  # mp3 or wav
         
         if not text:
             return {"error": "No text provided"}
         
         print(f"🎤 Text: {text[:80]}...")
-        print(f"   exaggeration={exaggeration}, output={output_format}")
+        print(f"   exaggeration={exaggeration}")
         print(f"   Voice URL: {audio_url[:60] if audio_url else 'None'}...")
         
         # Generate with or without voice cloning
@@ -113,29 +90,22 @@ def handler(job):
                 exaggeration=exaggeration
             )
         
-        duration = wav.shape[1] / 24000
+        # Output as WAV (backend will stitch and convert to MP3)
+        buffer = io.BytesIO()
+        torchaudio.save(buffer, wav, 24000, format="wav")
+        buffer.seek(0)
         
-        # Convert to requested format
-        if output_format == "mp3":
-            print(f"🔄 Converting to MP3...")
-            audio_bytes = wav_to_mp3(wav, 24000)
-            content_type = "audio/mpeg"
-        else:
-            buffer = io.BytesIO()
-            torchaudio.save(buffer, wav, 24000, format="wav")
-            buffer.seek(0)
-            audio_bytes = buffer.read()
-            content_type = "audio/wav"
-        
+        audio_bytes = buffer.read()
         audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
-        
+        duration = wav.shape[1] / 24000
         size_kb = len(audio_bytes) / 1024
-        print(f"✅ Generated {duration:.2f}s audio ({size_kb:.1f} KB {output_format})")
+        
+        print(f"✅ Generated {duration:.2f}s audio ({size_kb:.1f} KB WAV)")
         
         return {
             "audio_base64": audio_base64,
             "duration_seconds": round(duration, 2),
-            "format": output_format,
+            "format": "wav",
             "size_kb": round(size_kb, 1)
         }
         
