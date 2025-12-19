@@ -6,7 +6,6 @@ Parameters:
 - text: Text to synthesize
 - audio_url: URL to voice sample for cloning
 - exaggeration: Emotion intensity (0-1), default 0.5
-- cfg: Classifier-free guidance (0-1), default 0.5
 """
 
 import runpod
@@ -58,13 +57,12 @@ def handler(job):
         text = job_input.get("text", "")
         audio_url = job_input.get("audio_url")
         exaggeration = float(job_input.get("exaggeration", 0.5))
-        cfg = float(job_input.get("cfg", 0.5))
         
         if not text:
             return {"error": "No text provided"}
         
         print(f"🎤 Text: {text[:80]}...")
-        print(f"   exaggeration={exaggeration}, cfg={cfg}")
+        print(f"   exaggeration={exaggeration}")
         print(f"   Voice URL: {audio_url[:60] if audio_url else 'None'}...")
         
         # Generate with or without voice cloning
@@ -75,14 +73,12 @@ def handler(job):
             wav = model.generate(
                 text,
                 audio_prompt_path=voice_path,
-                exaggeration=exaggeration,
-                cfg=cfg
+                exaggeration=exaggeration
             )
         else:
             wav = model.generate(
                 text,
-                exaggeration=exaggeration,
-                cfg=cfg
+                exaggeration=exaggeration
             )
         
         # Convert to WAV bytes
